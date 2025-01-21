@@ -1,3 +1,16 @@
+'''
+
+Lab01: Análisis de Gestos y Caras
+Javier González Otero (243078)
+Norbert Tomàs Escudero (242695)
+Iria Quintero García (254373)
+
+For executing, run the following command: python agc_lab1_fdbasicscript.py
+The .py script, the .mat file and the directory with the images should all be on the same folder.
+
+'''
+
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,125 +26,168 @@ import dlib
 # ---------------------------------------------
 # Function to Compute Detection Scores
 # ---------------------------------------------
-from sklearn.metrics import confusion_matrix
-
 def compute_detection_scores(
     DetectionSTR: List[List[List[Union[int, float]]]],
     AGC_Challenge1_STR: pd.DataFrame,
     show_figures: bool = False,
 ) -> float:
-    all_f1_scores = []
-    total_tp = 0
-    total_fp = 0
-    total_fn = 0
+    """
+    Computes the face detection F1-score for predicted bounding boxes versus ground truth.
 
-    # Variables to store FP and FN images
-    fp_images = []
-    fn_images = []
+    Parameters:
+    -----------
+    DetectionSTR : List[List[List[Union[int, float]]]]
+        Detection results for each image. Each element is a list of bounding boxes,
+        where each box is [x1, y1, x2, y2].
+    AGC_Challenge1_STR : pd.DataFrame
+        A DataFrame containing 'imageName' (paths to images) and 'faceBox' (ground truth bounding boxes).
+    show_figures : bool
+        If True, displays each image with ground truth boxes (blue) and detected boxes (green).
+
+    Returns:
+    --------
+    float
+        The mean F1-score across all images.
+    """
+    all_f1_scores = []
 
     for idx, row in AGC_Challenge1_STR.iterrows():
-        gt_boxes = row["faceBox"]
-        det_boxes = DetectionSTR[idx]
+        # Convert ground truth and detections to int32 (or float) to avoid overflow
+        gt_boxes = [np.array(box, dtype=np.int32) for box in row["faceBox"]]
+        det_boxes = [np.array(box, dtype=np.int32) for box in DetectionSTR[idx]]
 
+        # If there are no GT boxes and no detections, score is perfect (1.0 for that image)
         if len(gt_boxes) == 0 and len(det_boxes) == 0:
             all_f1_scores.append(1.0)
             continue
+        # If one of them is empty but not the other, F1 = 0 for that image
         elif len(gt_boxes) == 0 or len(det_boxes) == 0:
             all_f1_scores.append(0.0)
             continue
 
-        # Convert bounding boxes to float64 for calculations
-        gt_boxes = np.array(gt_boxes, dtype=np.float64)
-        det_boxes = np.array(det_boxes, dtype=np.float64)
+        # Create a matrix for IoU (ground_truth_count x detection_count)
+        iou_matrix = np.zeros((len(gt_boxes), len(det_boxes)), dtype=np.float64)
 
-        # Calculate IoU for each ground-truth and detection pair
-        iou_matrix = np.zeros((len(gt_boxes), len(det_boxes)))
-
+        # Compute IoU for each (gt, det) pair
         for i, gt in enumerate(gt_boxes):
             for j, det in enumerate(det_boxes):
-                # Compute intersection coordinates
-                x1, y1 = max(gt[0], det[0]), max(gt[1], det[1])
-                x2, y2 = min(gt[2], det[2]), min(gt[3], det[3])
+                # Basic validation of box dimensions
+                if (
+                    (gt[2] <= gt[0])
+                    or (gt[3] <= gt[1])
+                    or (det[2] <= det[0])
+                    or (det[3] <= det[1])
+                ):
+                    print(f"Invalid box dimensions: GT {gt}, Det {det}")
+                    continue
 
-                # Calculate areas
-                intersection = max(0, x2 - x1) * max(0, y2 - y1)
-                union = (
-                    (gt[2] - gt[0]) * (gt[3] - gt[1])
-                    + (det[2] - det[0]) * (det[3] - det[1])
-                    - intersection
-                )
-                iou_matrix[i, j] = intersection / union if union > 0 else 0
+                # Intersection coordinates
+                x1 = max(gt[0], det[0])
+                y1 = max(gt[1], det[1])
+                x2 = min(gt[2], det[2])
+                y2 = min(gt[3], det[3])
 
-        # Evaluate matches based on IoU threshold
-        matched = iou_matrix > 0.5
-        tp = np.sum(matched.any(axis=1))  # True Positives
-        fp = len(det_boxes) - tp          # False Positives
-        fn = len(gt_boxes) - tp           # False Negatives
+                # Intersection width and height
+                inter_w = max(0, x2 - x1)
+                inter_h = max(0, y2 - y1)
+                intersection = float(inter_w * inter_h)
 
-        total_tp += tp
-        total_fp += fp
-        total_fn += fn
+                # Areas of GT and detection
+                area_gt = float((gt[2] - gt[0]) * (gt[3] - gt[1]))
+                area_det = float((det[2] - det[0]) * (det[3] - det[1]))
+                union = area_gt + area_det - intersection
 
-        # Store FP and FN images
-        if fp > 0:  # False Positives
-            fp_images.append(idx)
-        if fn > 0:  # False Negatives
-            fn_images.append(idx)
+                iou = intersection / union if union > 0 else 0
+                iou_matrix[i, j] = iou
+
+        # --------------------------------------------------
+        # GREEDY MATCHING STRATEGY
+        # --------------------------------------------------
+        matched_gts = set()
+        true_positives = 0
+
+        # For each detection, find the best matching GT (not matched yet)
+        for det_idx in range(len(det_boxes)):
+            best_iou = 0.0
+            best_gt_idx = -1
+
+            for gt_idx in range(len(gt_boxes)):
+                if gt_idx in matched_gts:
+                    # This GT is already matched with another detection
+                    continue
+
+                current_iou = iou_matrix[gt_idx, det_idx]
+                if current_iou > best_iou:
+                    best_iou = current_iou
+                    best_gt_idx = gt_idx
+
+            # If the best IoU is above 0.5, we have a new true positive
+            if best_iou > 0.5:
+                true_positives += 1
+                matched_gts.add(best_gt_idx)
+
+        # The rest of detections that didn't match are false positives
+        false_positives = len(det_boxes) - true_positives
+        # The GT boxes that are not matched are false negatives
+        false_negatives = len(gt_boxes) - true_positives
 
         # Compute precision, recall, and F1-score
-        precision = tp / (tp + fp) if tp + fp > 0 else 0
-        recall = tp / (tp + fn) if tp + fn > 0 else 0
-        f1_score = 2 * (precision * recall) / (precision + recall) if precision + recall > 0 else 0
+        precision = (
+            true_positives / (true_positives + false_positives)
+            if (true_positives + false_positives) > 0
+            else 0
+        )
+        recall = (
+            true_positives / (true_positives + false_negatives)
+            if (true_positives + false_negatives) > 0
+            else 0
+        )
+        if precision + recall > 0:
+            f1_score = 2 * (precision * recall) / (precision + recall)
+        else:
+            f1_score = 0.0
+
         all_f1_scores.append(f1_score)
 
-        # Optionally visualize results for FP and FN
-        if show_figures and (idx in fp_images or idx in fn_images):
+        # Optionally show the image with boxes
+        if show_figures:
             image = imread(row["imageName"])
             fig, ax = plt.subplots()
             ax.imshow(image)
+
+            # Draw ground truth in blue
             for box in gt_boxes:
                 ax.add_patch(
                     Rectangle(
                         (box[0], box[1]),
                         box[2] - box[0],
                         box[3] - box[1],
-                        edgecolor="blue",  # Ground truth in blue
+                        edgecolor="blue",
                         fill=False,
+                        linewidth=2,
                     )
                 )
+            # Draw detections in green
             for box in det_boxes:
-                # Draw red rectangles for False Positives
-                if idx in fp_images:
-                    ax.add_patch(
-                        Rectangle(
-                            (box[0], box[1]),
-                            box[2] - box[0],
-                            box[3] - box[1],
-                            edgecolor="red",  # FP in red
-                            fill=False,
-                        )
+                ax.add_patch(
+                    Rectangle(
+                        (box[0], box[1]),
+                        box[2] - box[0],
+                        box[3] - box[1],
+                        edgecolor="green",
+                        fill=False,
+                        linewidth=2,
                     )
-                # Draw blue rectangles for False Negatives
-                if idx in fn_images:
-                    ax.add_patch(
-                        Rectangle(
-                            (box[0], box[1]),
-                            box[2] - box[0],
-                            box[3] - box[1],
-                            edgecolor="blue",  # FN in blue
-                            fill=False,
-                        )
-                    )
+                )
+
             plt.title(f"F1-score: {f1_score:.2f}")
             plt.show()
 
-    # Mostrar matriz de confusión total
-    print("\nMatriz de confusión total:")
-    print(f"True Positives (TP): {total_tp}")
-    print(f"False Positives (FP): {total_fp}")
-    print(f"False Negatives (FN): {total_fn}")
+    # Compute average (mean) F1-score over all images
+    mean_f1_score = np.mean(all_f1_scores) if len(all_f1_scores) > 0 else 0.0
+    print(f"Mean F1-Score: {mean_f1_score:.4f}")
 
-    return np.mean(all_f1_scores)
+    return mean_f1_score
 
 
 # ---------------------------------------------
@@ -149,39 +205,38 @@ def MyFaceDetectionFunction(A):
     """
     hog_detector = dlib.get_frontal_face_detector()
 
-   
-    # Verificar el número de canales de la imagen
-    if len(A.shape) == 2:  # La imagen ya está en escala de grises
+    # Check the number of image channels
+    if len(A.shape) == 2:  # The image is already grayscale
         gray = A
-    elif len(A.shape) == 3:  # La imagen tiene 3 canales (RGB)
+    elif len(A.shape) == 3:  # The image has 3 channels (RGB)
         gray = cv2.cvtColor(A, cv2.COLOR_RGB2GRAY)
     else:
-        raise ValueError(f"Formato de imagen no reconocido: {A.shape}")
+        raise ValueError(f"Unrecognized image format: {A.shape}")
 
-    # Evaluar el contraste de la imagen
-    if np.std(gray) < 50:  # Umbral para determinar si el contraste es bajo
-        # Aplicar CLAHE solo si el contraste es bajo
-        clipLimit = 3.0  # Ajuste del clipLimit según sea necesario
+    # Evaluate image contrast
+    if np.std(gray) < 50:  # Threshold to determine if contrast is low
+        # Apply CLAHE only if the contrast is low
+        clipLimit = 3.0  # Adjust clipLimit as necessary
         clahe = cv2.createCLAHE(clipLimit=clipLimit, tileGridSize=(8, 8))
         gray = clahe.apply(gray)
 
-    # Detectar las caras usando HOG (Histogram of Oriented Gradients)
+    # Detect faces using HOG (Histogram of Oriented Gradients)
     detections = hog_detector(gray, upsample_num_times=1)
 
     face_boxes = [
         [d.left(), d.top(), d.right(), d.bottom()] for d in detections
-    ]  # Convertir bounding boxes a lista
+    ]  # Convert bounding boxes to list
 
     return face_boxes
 
 # ---------------------------------------------
 # Basic Script for Face Detection Challenge
 # ---------------------------------------------
-# Directorio de trabajo
-dir_challenge = os.path.dirname(os.getcwd())
+# Working directory
+dir_challenge = os.getcwd()
 
-# Cargar los datos de entrenamiento
-AGC_Challenge1_TRAINING = loadmat(dir_challenge + "/fga_face_detection_training.mat")
+# Load training data
+AGC_Challenge1_TRAINING = loadmat(dir_challenge + "/AGC15_Challenge1_Test.mat")
 AGC_Challenge1_TRAINING = np.squeeze(AGC_Challenge1_TRAINING["AGC_Challenge1_TRAINING"])
 AGC_Challenge1_TRAINING = [
     [row.flat[0] if row.size == 1 else row for row in line]
@@ -189,66 +244,21 @@ AGC_Challenge1_TRAINING = [
 ]
 columns = ["id", "imageName", "faceBox"]
 AGC_Challenge1_TRAINING = pd.DataFrame(AGC_Challenge1_TRAINING, columns=columns)
-print(AGC_Challenge1_TRAINING.head())
 
-# Ruta a las imágenes de entrenamiento
+# Path to training images
 imgPath = os.path.join(dir_challenge, "training/")
 
-# Actualizar las rutas de las imágenes
+# Update image paths
 AGC_Challenge1_TRAINING["imageName"] = AGC_Challenge1_TRAINING["imageName"].apply(
-    lambda x: os.path.join(imgPath, x)  # Asegura el formato correcto
+    lambda x: os.path.join(imgPath, x)  # Ensure correct format
 )
 
-# Verifica que los archivos existen
+# Verify that files exist
 AGC_Challenge1_TRAINING = AGC_Challenge1_TRAINING[
     AGC_Challenge1_TRAINING["imageName"].apply(os.path.exists)
 ]
 
-# Barajar el DataFrame antes de dividirlo en grupos
-AGC_Challenge1_TRAINING = AGC_Challenge1_TRAINING.sample(frac=1, random_state=42).reset_index(drop=True)
-
-# Dividir el conjunto de entrenamiento en 6 grupos
-groups = np.array_split(AGC_Challenge1_TRAINING, 6)
-
-# Procesamiento y cálculo del F1-score para cada grupo
-group_scores = []
-for i, group in enumerate(groups):
-    # Resetear índices del grupo para evitar problemas de indexación
-    group = group.reset_index(drop=True)
-    print(f"Procesando el grupo {i + 1}/{len(groups)} con {len(group)} imágenes...")
-
-    DetectionSTR_group = []
-    total_time_group = 0
-
-    for idx, im in enumerate(group["imageName"]):
-        A = imread(im)
-        try:
-            start_time = time.time()
-            det_faces = MyFaceDetectionFunction(A)  # Llamar a la función de detección
-            elapsed_time = time.time() - start_time
-            total_time_group += elapsed_time
-        except Exception as e:
-            print(f"Error procesando imagen {im}: {e}")
-            det_faces = []
-
-        DetectionSTR_group.append(det_faces)
-
-    # Calcular F1-score para el grupo
-    FD_score_group = compute_detection_scores(DetectionSTR_group, group, show_figures=False)
-    group_scores.append(FD_score_group)
-
-    # Mostrar resultados del grupo
-    minutes, seconds = divmod(total_time_group, 60)
-    print(f"F1-score (grupo {i + 1}): {FD_score_group * 100:.2f}, Tiempo total: {int(minutes)} m {seconds:.2f} s")
-
-# Mostrar los F1-scores finales de cada grupo
-print("\nResultados finales por grupo:")
-for i, score in enumerate(group_scores):
-    print(f"Grupo {i + 1}: F1-score = {score * 100:.2f}%")
-
-
-
-'''# Procesamiento de imágenes
+# Image processing
 DetectionSTR = []
 total_time = 0
 
@@ -259,18 +269,18 @@ for idx, im in enumerate(AGC_Challenge1_TRAINING["imageName"]):
     A = imread(im)
     try:
         start_time = time.time()
-        det_faces = MyFaceDetectionFunction(A)  # Llamar a la función de detección
+        det_faces = MyFaceDetectionFunction(A)  # Call detection function
         elapsed_time = time.time() - start_time
         total_time += elapsed_time
     except Exception as e:
-        print(f"Error procesando imagen {im}: {e}")
+        print(f"Error processing image {im}: {e}")
         det_faces = []
 
     DetectionSTR.append(det_faces)
 
-# Calcular F1-score
+# Calculate F1-score
 FD_score = compute_detection_scores(DetectionSTR, AGC_Challenge1_TRAINING, show_figures=False)
 
-# Mostrar resultados finales
+# Display final results
 minutes, seconds = divmod(total_time, 60)
-print(f"F1-score: {FD_score * 100:.2f}, Tiempo total: {int(minutes)} m {seconds:.2f} s")'''
+print(f"F1-score: {FD_score * 100:.2f}, Total time: {int(minutes)} m {seconds:.2f} s")
