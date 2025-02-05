@@ -1,5 +1,5 @@
 % --- Define the image directory ---
-img_path = ''; %ADD YOUR PATH TO THE IMAGES
+img_path = 'C:\Users\jgojg\Escritorio\4to\2ndotrim\caretos\lacal lab 3\l03_emotion_analysis\group_1'; %ADD YOUR PATH TO THE IMAGES
 
 % --- Get image names and sort them ---
 images = dir(fullfile(img_path, '*.jpg'));
@@ -38,6 +38,8 @@ yticklabels(formattedLabels);
 xtickangle(45);  % Rotate X labels to avoid overlap
 
 % --- Consistency Heatmap ---
+% Replace inf per -1
+consistencyM(isinf(consistencyM)) = -1;
 figure;
 imagesc(consistencyM);
 colorbar;
