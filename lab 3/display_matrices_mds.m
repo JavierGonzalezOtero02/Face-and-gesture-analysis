@@ -1,5 +1,14 @@
 % --- Define the image directory ---
-img_path = 'C:\Users\jgojg\Escritorio\4to\2ndotrim\caretos\lacal lab 3\l03_emotion_analysis\group_1'; %ADD YOUR PATH TO THE IMAGES
+img_path = ''; %ADD YOUR PATH TO THE IMAGES !!!
+disp(['Checking image path: ', img_path]);
+if ~isfolder(img_path)
+    error('The specified directory does not exist: %s', img_path);
+end
+images = dir(fullfile(img_path, '*.jpg'));
+if isempty(images)
+    error('No .jpg images found in the specified directory: %s', img_path);
+end
+
 
 % --- Get image names and sort them ---
 images = dir(fullfile(img_path, '*.jpg'));
@@ -18,7 +27,7 @@ for i = 1:length(uniqueEmotions)
 end
 
 % --- Load similarity and consistency matrices ---
-data = load('emotions_analysis_v2.mat');
+data = load('lab03_TomasEscudero_QuinteroGarcia_GonzalezOtero.mat');
 similarityM = data.simScores.similarityM;
 consistencyM = data.simScores.consistencyM;
 
