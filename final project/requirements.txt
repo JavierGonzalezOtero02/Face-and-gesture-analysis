@@ -1,0 +1,9 @@
+numpy
+imageio
+scipy
+torch
+torchvision
+opencv-python
+dlib
+p-utils
+Pillow
